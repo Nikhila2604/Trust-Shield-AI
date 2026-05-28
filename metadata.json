@@ -1,0 +1,6 @@
+{
+  "name": "Truth Shield AI",
+  "description": "An AI-powered fake news, misinformation, and clickbait detector with interactive analysis, charts, and educational modules.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
