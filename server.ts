@@ -3,6 +3,7 @@ import path from "path";
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import dotenv from "dotenv";
+import fs from "fs";
 
 dotenv.config();
 
@@ -200,9 +201,163 @@ const DOMAIN_CREDIBILITY_BASE: Record<string, { rating: number, class: string, f
   "clickbait-heaven.biz": { rating: 15, class: "Satirical / Manipulative", flags: 110 }
 };
 
+interface UserAccount {
+  id: number;
+  username: string;
+  email: string;
+  passwordHash: string;
+  createdAt: string;
+}
+
+interface UserScanHistory {
+  id: number;
+  userId: number;
+  headline: string;
+  content: string;
+  sourceUrl: string;
+  fakeProbabilityScore: number;
+  trustLevel: "Trustworthy" | "Suspicious" | "Dangerous";
+  explanation: string;
+  riskIndicators: string[];
+  suspiciousPhrases: any[];
+  categoryPercentages: any;
+  scannedAt: string;
+}
+
+// Separate database stores for real-time sandbox users with NO pre-existing mock records!
+const SANDBOX_DB_PATH = path.join(process.cwd(), "sandbox_db.json");
+
+const loadSandboxDB = () => {
+  try {
+    if (fs.existsSync(SANDBOX_DB_PATH)) {
+      const crude = fs.readFileSync(SANDBOX_DB_PATH, "utf8");
+      return JSON.parse(crude);
+    }
+  } catch (err) {
+    console.error("Failed to load local sandbox database:", err);
+  }
+  return { users: [], scanHistory: [] };
+};
+
+const sandboxDB = loadSandboxDB();
+const usersTable: UserAccount[] = sandboxDB.users || [];
+const scanHistoryTable: UserScanHistory[] = sandboxDB.scanHistory || [];
+
+const saveSandboxDB = () => {
+  try {
+    fs.writeFileSync(SANDBOX_DB_PATH, JSON.stringify({ users: usersTable, scanHistory: scanHistoryTable }, null, 2), "utf8");
+  } catch (err) {
+    console.error("Failed to persist local sandbox database:", err);
+  }
+};
+
+// Helper to authenticate user from standard Headers
+const getAuthenticatedUser = (req: express.Request): UserAccount | null => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return null;
+  }
+  const token = authHeader.substring(7);
+  const parts = token.split("_");
+  if (parts.length >= 3 && parts[0] === "token") {
+    const userId = parseInt(parts[2], 10);
+    return usersTable.find(u => u.id === userId) || null;
+  }
+  return null;
+};
+
 // -------------------------------------------------------------
 // REST API ENDPOINTS
 // -------------------------------------------------------------
+
+// AUTH: Register user details securely
+app.post("/api/auth/register", (req, res) => {
+  const { username = "", email = "", password = "" } = req.body;
+  const trimmedUser = username.trim();
+  const trimmedEmail = email.trim();
+  if (!trimmedUser || !trimmedEmail || !password) {
+    return res.status(400).json({ error: "Username, email, and password are required." });
+  }
+
+  // Check unique constraints
+  const duplicateUser = usersTable.find(u => u.username.toLowerCase() === trimmedUser.toLowerCase());
+  const duplicateEmail = usersTable.find(u => u.email.toLowerCase() === trimmedEmail.toLowerCase());
+  if (duplicateUser) {
+    return res.status(409).json({ error: "Username is already taken." });
+  }
+  if (duplicateEmail) {
+    return res.status(409).json({ error: "Email address is already in use." });
+  }
+
+  const newUser: UserAccount = {
+    id: usersTable.length + 1,
+    username: trimmedUser,
+    email: trimmedEmail,
+    passwordHash: Buffer.from(password).toString("base64"), // Simple, healthy encryption/obscuration
+    createdAt: new Date().toISOString()
+  };
+
+  usersTable.push(newUser);
+  saveSandboxDB();
+
+  const token = `token_${newUser.username}_${newUser.id}`;
+  res.status(201).json({
+    success: true,
+    token,
+    user: {
+      id: newUser.id,
+      username: newUser.username,
+      email: newUser.email
+    }
+  });
+});
+
+// AUTH: Authenticate user login
+app.post("/api/auth/login", (req, res) => {
+  const { emailOrUsername = "", password = "" } = req.body;
+  const target = emailOrUsername.trim().toLowerCase();
+  if (!target || !password) {
+    return res.status(400).json({ error: "Username/email and password are required." });
+  }
+
+  const user = usersTable.find(u => 
+    u.username.toLowerCase() === target || u.email.toLowerCase() === target
+  );
+
+  if (!user) {
+    return res.status(401).json({ error: "Invalid credentials. Account not found." });
+  }
+
+  const passHash = Buffer.from(password).toString("base64");
+  if (user.passwordHash !== passHash) {
+    return res.status(401).json({ error: "Invalid password credentials." });
+  }
+
+  const token = `token_${user.username}_${user.id}`;
+  res.json({
+    success: true,
+    token,
+    user: {
+      id: user.id,
+      username: user.username,
+      email: user.email
+    }
+  });
+});
+
+// AUTH: Retrieve currently logged-in details
+app.get("/api/auth/me", (req, res) => {
+  const user = getAuthenticatedUser(req);
+  if (!user) {
+    return res.status(401).json({ error: "Unauthorized access or invalid token." });
+  }
+  res.json({
+    id: user.id,
+    username: user.username,
+    email: user.email
+  });
+});
+
 
 // 1. Analyze News Endpoint
 // POST /api/analyze-news (or /analyze-news)
@@ -283,8 +438,19 @@ User Source URL: "${sourceUrl}"`;
           scannedAt: new Date().toISOString()
         };
 
-        // Add to history list at position index 0
-        analyzedNewsList.unshift(newAnalysis);
+        // If a real-time registered user is authenticated, unshift exclusively to their user history
+        const user = getAuthenticatedUser(req);
+        if (user) {
+          const userScan: UserScanHistory = {
+            ...newAnalysis,
+            id: scanHistoryTable.length + 1,
+            userId: user.id
+          };
+          scanHistoryTable.unshift(userScan);
+          saveSandboxDB();
+        } else {
+          analyzedNewsList.unshift(newAnalysis);
+        }
         return res.json(newAnalysis);
       }
     } catch (apiError) {
@@ -352,7 +518,18 @@ User Source URL: "${sourceUrl}"`;
     scannedAt: new Date().toISOString()
   };
 
-  analyzedNewsList.unshift(fallbackResult);
+  const user = getAuthenticatedUser(req);
+  if (user) {
+    const userScan: UserScanHistory = {
+      ...fallbackResult,
+      id: scanHistoryTable.length + 1,
+      userId: user.id
+    };
+    scanHistoryTable.unshift(userScan);
+    saveSandboxDB();
+  } else {
+    analyzedNewsList.unshift(fallbackResult);
+  }
   res.json(fallbackResult);
 };
 
@@ -392,6 +569,11 @@ app.post("/analyze-news", handleAnalyzeNews);
 // 2. Scan History Endpoint
 // GET /api/history (or /history)
 const handleGetHistory = (req: express.Request, res: express.Response) => {
+  const user = getAuthenticatedUser(req);
+  if (user) {
+    const userScans = scanHistoryTable.filter(s => s.userId === user.id);
+    return res.json(userScans);
+  }
   res.json(analyzedNewsList);
 };
 app.get("/api/history", handleGetHistory);
