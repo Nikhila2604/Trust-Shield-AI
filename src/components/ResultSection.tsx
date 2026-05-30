@@ -7,7 +7,7 @@ import React from "react";
 import { motion } from "motion/react";
 import { 
   ShieldCheck, AlertTriangle, Info, ArrowRight, ShieldAlert, CheckCircle, HelpCircle, AlertOctagon,
-  TrendingDown, Percent, Sparkles
+  TrendingDown, Percent, Sparkles, Globe
 } from "lucide-react";
 import { 
   BarChart, Bar, XAxis, YAxis, Tooltip as ChartTooltip, ResponsiveContainer, Cell 
@@ -29,7 +29,8 @@ export default function ResultSection({ analysis }: ResultSectionProps) {
     recommendedAction,
     headline,
     content,
-    categoryPercentages
+    categoryPercentages,
+    sourceUrl
   } = analysis;
 
   // Set colors and icons based on trust level
@@ -244,16 +245,27 @@ export default function ResultSection({ analysis }: ResultSectionProps) {
               <p className="text-xs text-slate-500 max-w-lg font-semibold leading-relaxed">
                 Calculated by auditing semantic style cues, subjective bias patterns, and verifying factual context through trustworthy international records.
               </p>
-              <div className="pt-2">
+              <div className="pt-2 flex flex-wrap gap-2 items-center justify-center sm:justify-start">
                 <span className={`px-4 py-1.5 font-extrabold text-xs sm:text-sm rounded-xl border ${statusBadge} uppercase tracking-wider`}>
                   {trustLevel} Content
                 </span>
+                {sourceUrl && (
+                  <a
+                    href={sourceUrl.startsWith("http") ? sourceUrl : `https://${sourceUrl}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-blue-50/70 hover:bg-blue-100 text-blue-600 hover:text-blue-800 border border-blue-100/60 font-extrabold text-xs transition-all tracking-wide shadow-4xs"
+                  >
+                    <Globe className="w-3.5 h-3.5" />
+                    <span>View Original Source 🔗</span>
+                  </a>
+                )}
               </div>
             </div>
 
             {/* Circular Gauge centered */}
             <div className="relative w-36 h-36 flex items-center justify-center bg-white border border-slate-150 rounded-2xl p-4 shrink-0 shadow-3xs">
-              <svg className="w-full h-full transform -rotate-90">
+              <svg className="w-full h-full transform -rotate-90" viewBox="0 0 144 144">
                 {/* Background circle */}
                 <circle
                   cx="72"
@@ -279,8 +291,8 @@ export default function ResultSection({ analysis }: ResultSectionProps) {
                 />
               </svg>
 
-              {/* Inside score display text */}
-              <div className="absolute flex flex-col items-center justify-center">
+              {/* Inside score display text centered with absolute inset-0 */}
+              <div className="absolute inset-0 flex flex-col items-center justify-center">
                 <span className={`text-3xl font-display font-extrabold bg-gradient-to-r ${textGrad} bg-clip-text text-transparent`}>
                   {fakeProbabilityScore}%
                 </span>

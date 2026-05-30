@@ -54,56 +54,106 @@ interface BotMessageFormatterProps {
 }
 
 export function BotMessageFormatter({ text }: BotMessageFormatterProps) {
-  const rawLines = text.split("\n").map(l => l.trim()).filter(Boolean);
+  // Split input by double newlines to find paragraphs, preserving clean paragraph blocks
+  const paragraphs = text.split(/\n\n+/);
 
   return (
-    <div className="space-y-3.5 font-sans text-slate-800 text-sm sm:text-[15px] leading-relaxed select-text w-full text-left">
-      {rawLines.map((line, idx) => {
-        // Check if the line is a list item or start of a block
-        let cleanLine = line.replace(/^([•\-\*\s■▪▫▶️➔➔\d+\.\s]+)/, "").trim();
+    <div className="space-y-4 font-sans text-slate-800 text-sm sm:text-[15px] leading-relaxed select-text w-full text-left">
+      {paragraphs.map((para, paraIdx) => {
+        const lines = para.split("\n").map(l => l.trim()).filter(Boolean);
+        if (lines.length === 0) return null;
 
-        // Attempt structured visual emoji isolation
-        const emojiMatch = cleanLine.match(/^([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD00-\uDFFF]|[\ud000-\udfff])/);
-        
-        let emoji: string | null = null;
-        let lineContent = cleanLine;
-        
-        if (emojiMatch) {
-          emoji = emojiMatch[0];
-          lineContent = cleanLine.substring(emoji.length).trim();
-        }
+        // Check if this entire paragraph represents a list of bullet points
+        const isBulletList = lines.every(line => 
+          line.startsWith("•") || line.startsWith("-") || line.startsWith("*") || line.startsWith("✦")
+        );
 
-        // Render line
-        if (emoji) {
+        if (isBulletList) {
           return (
-            <div key={idx} className="flex gap-3 items-start py-0.5">
-              <span className="text-base sm:text-lg shrink-0 select-none mt-0.5">{emoji}</span>
-              <div className="flex-1 font-semibold text-slate-805">
-                {parseInlineFormatting(lineContent)}
-              </div>
-            </div>
+            <ul key={paraIdx} className="space-y-2 my-2 pl-1.5">
+              {lines.map((line, lineIdx) => {
+                const cleanLine = line.replace(/^([•\-\*✦]\s*)/, "").trim();
+                return (
+                  <li key={lineIdx} className="flex gap-2.5 items-start">
+                    <span className="text-blue-500 shrink-0 select-none mt-1.5 text-[8px]">✦</span>
+                    <div className="flex-1 font-semibold text-slate-800">
+                      {parseInlineFormatting(cleanLine)}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
           );
         }
 
-        // Check if original line was a standard bullet point without emoji
-        const wasBullet = line.startsWith("•") || line.startsWith("-") || line.startsWith("*");
+        // Check if this entire paragraph represents a numbered ordered list
+        const isNumberedList = lines.every(line => 
+          /^\d+[\.\)]\s+/.test(line)
+        );
 
-        if (wasBullet) {
+        if (isNumberedList) {
           return (
-            <div key={idx} className="flex gap-2.5 items-start py-0.5 pl-4">
-              <span className="text-blue-500 shrink-0 select-none mt-[8px] font-bold text-[8px]">✦</span>
-              <div className="flex-1 font-semibold text-slate-805">
-                {parseInlineFormatting(cleanLine)}
-              </div>
-            </div>
+            <ol key={paraIdx} className="space-y-2 my-2 pl-1.5">
+              {lines.map((line, lineIdx) => {
+                const numMatch = line.match(/^(\d+)[\.\)]\s+/);
+                const num = numMatch ? numMatch[1] : (lineIdx + 1).toString();
+                const cleanLine = line.replace(/^\d+[\.\)]\s+/, "").trim();
+                return (
+                  <li key={lineIdx} className="flex gap-2.5 items-start">
+                    <span className="text-blue-600 bg-blue-50 border border-blue-200/50 rounded-md w-5 h-5 flex items-center justify-center shrink-0 select-none text-[10px] font-extrabold mt-0.5">
+                      {num}
+                    </span>
+                    <div className="flex-1 font-semibold text-slate-800">
+                      {parseInlineFormatting(cleanLine)}
+                    </div>
+                  </li>
+                );
+              })}
+            </ol>
           );
         }
 
-        // Default paragraph
+        // Standard lines inside paragraph
         return (
-          <p key={idx} className="font-semibold text-slate-805 my-1">
-            {parseInlineFormatting(line)}
-          </p>
+          <div key={paraIdx} className="space-y-1.5">
+            {lines.map((line, lineIdx) => {
+              // Try to find if line has a leading emoji
+              const emojiMatch = line.match(/^([\u2700-\u27BF]|[\uE000-\uF8FF]|\uD83C[\uDC00-\uDFFF]|\uD83D[\uDC00-\uDFFF]|[\u2011-\u26FF]|\uD83E[\uDD00-\uDFFF]|[\ud000-\udfff])/);
+              
+              if (emojiMatch) {
+                const emoji = emojiMatch[0];
+                const content = line.substring(emoji.length).trim();
+                return (
+                  <div key={lineIdx} className="flex gap-2.5 items-start py-0.5">
+                    <span className="text-base sm:text-lg shrink-0 select-none mt-0.5">{emoji}</span>
+                    <div className="flex-1 font-semibold text-slate-800">
+                      {parseInlineFormatting(content)}
+                    </div>
+                  </div>
+                );
+              }
+
+              // Stray bullet points inside mix layout
+              if (line.startsWith("•") || line.startsWith("-") || line.startsWith("*")) {
+                const cleanLine = line.replace(/^([•\-\*]\s*)/, "").trim();
+                return (
+                  <div key={lineIdx} className="flex gap-2.5 items-start py-0.5 pl-4">
+                    <span className="text-blue-500 shrink-0 select-none mt-1.5 text-[8px]">✦</span>
+                    <div className="flex-1 font-semibold text-slate-800">
+                      {parseInlineFormatting(cleanLine)}
+                    </div>
+                  </div>
+                );
+              }
+
+              // Normal text line
+              return (
+                <p key={lineIdx} className="font-semibold text-slate-800">
+                  {parseInlineFormatting(line)}
+                </p>
+              );
+            })}
+          </div>
         );
       })}
     </div>
@@ -115,9 +165,18 @@ export default function AssistantChat() {
     {
       id: "1",
       sender: "bot",
-      text: `🤖 **Welcome to AI News Analyst**: I am your automated diagnostic verification partner. Let's inspect news integrity!
-💡 **Diagnostic Guidance**: Ask me questions about clickbait phrases, fear-mongering tactics, or report suspicious statements.
-🛡️ **Verify Sources**: You can cross-reference headlines back on reputable platforms like [Google Fact Check Explorer](https://toolbox.google.com/factcheck/explorer) or check safety domain reputation profiles!`,
+      text: `👋 **Welcome to Truth Shield Assistant Support!**
+
+😊 My name is **Truth Shield Analyst**, and I am your dedicated media safety guide today.
+
+🌟 I am here to help you navigate online claims, answer doubts about news legitimacy, check viral rumors, or guide you step-by-step through staying safe on the web! Let's explore everything with full confidence.
+
+💡 **How I can serve you today:**
+• **Claim Verification:** Paste a headline or rumor, and I will cross-reference it with our real-time [Google Fact Check Explorer](https://toolbox.google.com/factcheck/explorer) tool to find the truth!
+• **Media Literacy:** Ask me how to spot clickbait, handle biased forwards, or check a news domain's safety guidelines.
+• **Security Check:** If a browser window demands you to paste strange commands or run a file to "prove you are human", let me check if it's a scam!
+        
+Please tell me what's on your mind. I am listening, and we'll take our time to explain everything clearly! 🛡️✨`,
       timestamp: new Date()
     }
   ]);
@@ -149,33 +208,20 @@ export default function AssistantChat() {
     setInputText("");
     setIsTyping(true);
 
-    // Call server API for smart assistance
+    // Call server API for conversational assistance
     try {
-      const response = await fetch("/api/analyze-news", {
+      const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content: userMsgText })
+        body: JSON.stringify({ 
+          message: userMsgText,
+          history: messages.map(m => ({ sender: m.sender, text: m.text }))
+        })
       });
 
       if (response.ok) {
         const data = await response.json();
-        
-        // Exact Precise Intent Alignment checking
-        let botText = data.explanation || "";
-
-        if (!botText) {
-          if (data.fakeProbabilityScore > 65) {
-            botText = `🚨 **High Threat Warning**: My scan identified high patterns of potential misinformation within this statement (${data.fakeProbabilityScore}% Risk Score).
-⚠️ **Triggered Flags**: Checked signals include: **${data.riskIndicators ? data.riskIndicators.join(", ") : "Sensational claims"}**.
-🎓 **Diagnostic Review**: ${data.explanation || "Exaggerated wording with unverified details."}
-🛡️ **Action Recommendation**: ${data.recommendedAction || "Avoid sharing."} Be sure to cross-check this query directly with [Google Fact Check](https://toolbox.google.com/factcheck/explorer).`;
-          } else if (data.fakeProbabilityScore < 30 && data.suspiciousPhrases?.length === 0) {
-            botText = `✅ **Analysis Clean**: This statement aligns strongly with objective journalistic standards. Risk index is low (${data.fakeProbabilityScore}%).
-🌐 **Verification Check**: While details look healthy, please examine the publishing company domain name via our standard [Domain Inspector Tool](/analyze) tab to assure optimal coverage.`;
-          } else {
-            botText = getInformationalAnswer(userMsgText);
-          }
-        }
+        const botText = data.response;
 
         setTimeout(() => {
           setMessages(prev => [...prev, {
@@ -185,7 +231,7 @@ export default function AssistantChat() {
             timestamp: new Date()
           }]);
           setIsTyping(false);
-        }, 1200);
+        }, 800);
 
       } else {
         throw new Error("Chat call failed");
@@ -195,53 +241,131 @@ export default function AssistantChat() {
         setMessages(prev => [...prev, {
           id: Math.random().toString(),
           sender: "bot",
-          text: getInformationalAnswer(userMsgText),
+          text: getOfflineChatFallback(userMsgText),
           timestamp: new Date()
         }]);
         setIsTyping(false);
-      }, 1000);
+      }, 800);
     }
   };
 
-  const getInformationalAnswer = (query: string): string => {
-    const q = query.toLowerCase();
+  const getOfflineChatFallback = (query: string): string => {
+    const q = query.toLowerCase().trim();
     
-    // Exact verification robot/human installer code prompt match (cyber security check)
-    if (q.includes("robot") || q.includes("human") || q.includes("verify") || q.includes("copy code") || q.includes("install") || q.includes("cmd") || q.includes("powershell") || q.includes("command prompt")) {
-      return `🚨 **Malicious Verification Scam (High Security Threat)**: Legitimate services and websites use standard, automatic CAPTCHAs (like ticking a box, clicking traffic lights, or solving quick interactive puzzles). They will **NEVER** ask you to copy commands, open your computer terminal or command prompt, run custom script codes, or install local executable files to prove you are human.
-⚠️ **How the Attack Succeeds**: This is a dangerous social engineering trap. Compromised websites instruct the user to press key combos (such as Win+R), paste clipboard codes, or run Powershell strings. This instantly bypasses all browser security parameters and executes a virus directly on your operating system.
-🛡️ **Immediate Action Plan**:
-• **Do NOT copy, paste, or run any text or files** from this website.
-• **Close the tab immediately**.
-• If you already ran a custom code, disconnect your device from the internet right away and execute a comprehensive system search with trusted anti-malware software.
-• You can double-check similar active cyber fraud alerts on [Snopes Fact Check](https://www.snopes.com) or read safety updates with [Google Fact Check Explorer](https://toolbox.google.com/factcheck/explorer).`;
+    // 1. Technical / Local setup questions
+    if (q.includes("local") || q.includes("setup") || q.includes("mysql") || q.includes("browser") || q.includes("database") || q.includes("key") || q.includes("env") || q.includes("config")) {
+      return `💡 **Setting up your local environment is incredibly quick and easy!** 😊
+
+Here is a step-by-step hub guide to get you up and running:
+
+1️⃣ **Configure the Gemini AI Key**: Go to [Google AI Studio](https://aistudio.google.com), click to get a free API Key, and paste it into your local project's \`.env\` file as: \`GEMINI_API_KEY=your_key_here\`.
+2️⃣ **Interactive Database**: By default, the app runs on a zero-setup JSON database (\`sandbox_db.json\`) to save histories and scans automatically nearby! If you wish to use MySQL, configure your credentials in the same \`.env\` file using the DBMigrationSchema layout.
+3️⃣ **Run the Server**: Install dependencies with \`npm install\`, then run \`npm run dev\` and open \`http://localhost:3000\` to see everything alive.
+
+Let me know if you need setup help or run into any trouble, I am here to guide you step-by-step! 🛠️✨`;
     }
 
-    if (q.includes("whatsapp") || q.includes("forward")) {
-      return `🚨 **WhatsApp Forward Harassment**: WhatsApp forwards completely bypass journalistic filters, letting warnings spiral uncontrolled into standard communities.
-💡 **Diagnostic Guidance**: Before forwarding viral warnings, inspect key quotes. Copy any single phrase and run searches on [Google News](https://news.google.com) to see if mainstream reports exist.
-🎓 **Verification Principle**: Never copy/forward text that urges you to share 'immediately before it is deleted'—this is typical social panic manipulation. Check targets with independent experts on the [Snopes Fact-Checker](https://www.snopes.com).`;
+    // 2. Greetings - Checked on word boundaries to prevent matching substrings like 'this', 'within', or 'they'.
+    const greetingRegex = /\b(hello|hi|hey|greetings|good\s+morning|good\s+afternoon|g'day)\b/i;
+    if (greetingRegex.test(q)) {
+      return `👋 **Hello! I am Truth Shield Analyst, your friendly safety assistant!** 😊
+
+I am absolutely thrilled to chat with you today! I am here to discuss online claims, answer doubts about news source legitimacy, or guide you step-by-step through staying safe on the web!
+
+🌟 **Here are a few quick ways we can work together today:**
+• Analyze a suspicious headline or viral message.
+• Learn how to spot clickbait prompts or fear-mongering flags.
+• Set up your local database and Gemini AI key.
+
+How is your day going? Tell me what's on your mind and let's explore it together! 💬✨`;
     }
-    if (q.includes("emotional") || q.includes("scared") || q.includes("fear")) {
-      return `⚠️ **Emotional Exploitation**: Balanced articles outline facts calmly. Malicious creators rely on intense triggers like shock, anxiety, or rage to stop you from questioning.
-💡 **Diagnostic Guidance**: If an inbox message uses scary prompts (like 'SHOCKING CONFESSION' or 'YOUR VACCINE DETAILS ARE COMPROMISED'), pause, breathe, and verify on [FactCheck.org](https://www.factcheck.org).
-🎓 **Verification Principle**: Any article seeking to spark anger or alarm before you analyze the data demands additional cross-references.`;
+
+    // 3. Fake News / Verification Steps
+    if (q.includes("verify") || q.includes("fake news") || q.includes("check") || q.includes("spot") || q.includes("how to")) {
+      return `🧭 **Spotting and verifying claims like a professional is simple!** 🔍
+
+You don't need days of media classes to protect your friends and family. Here are the 3 golden rules:
+
+1️⃣ **Inspect the Source Domain**: Utilize our **Domain Inspector** tab to check if the publisher has hyper-partisan propaganda ratings or unsafe red flags.
+2️⃣ **Look for Major Sources**: Open an search engine to verify if reputable global news bureaus are discussing the same report.
+3️⃣ **Test with Independent Experts**: Copy the statement and check it on [Snopes Fact Check](https://www.snopes.com) or [FactCheck.org](https://www.factcheck.org).
+
+Do you have a specific rumor or claim you'd like us to look up together right now? Let's check it! 🌟🛡️`;
     }
-    if (q.includes("clickbait") || q.includes("headline")) {
-      return `💡 **Exaggerated Headlines**: Clickbait headlines rely on sensational terminology and incomplete summaries to force clicks, generating advertising revenue.
-🚨 **Sensational Signals**: Look out for headers with excessive capitalization, nested exclamation marks, or missing reliable sources.
-🔬 **Diagnostic Check**: Cross-check title snippets on official search directories like [Google Fact Check Explorer](https://toolbox.google.com/factcheck/explorer) first.`;
+
+    // 4. WhatsApp / Viral Forwards
+    if (q.includes("whatsapp") || q.includes("forward") || q.includes("viral") || q.includes("message")) {
+      return `📌 **Viral WhatsApp forwards can indeed be tricky to navigate!** 📱
+
+Because forwards bypass journalistic controls, false warnings and panic can spread uncontrolled very quickly. Here is the best way to handle them calmly:
+
+• 🛑 **Pause on Urgency**: If a citation urges you to "FORWARD IMMEDIATELY!" or uses flashy capital letters, it is designed to bypass your logical thinking.
+• 🔍 **Search the Core claim**: Copy the key sentence and paste it into [Google Fact Check Explorer](https://toolbox.google.com/factcheck/explorer) to check if a verdict already exists.
+• 🛡️ **Politely Alert the Sender**: Texting back reports in a positive way maintains community health!
+
+Have you received a suspicious WhatsApp message we can inspect together? Put it in the chat! 😊🌷`;
     }
-    if (q.includes("how") || q.includes("verify") || q.includes("check")) {
-      return `🛡️ **Verify Like a Professional**: Spotting fake news does not require days. You can use these rapid diagnostics.
-🔎 **Domain Check**: Use our 'Domain Inspector' interface to scan for hyper-partisan propaganda labels.
-🌐 **Expert Databases**: Search original subject headers directly on [Snopes](https://www.snopes.com) or [FactCheck.org](https://www.factcheck.org) to obtain verified verdicts.
-🎓 **Verification Principle**: If only one unknown blog website reports on a major global breaking story, treat has high probability of a rumor.`;
+
+    // 5. Clickbait / Headlines
+    if (q.includes("clickbait") || q.includes("headline") || q.includes("bait")) {
+      return `💡 **Spotting sensational clickbait is a great superpower!** 🎣
+
+Clickbait existence relies purely on provoking feelings of curiosity, rage, or anxiety to secure ad revenue. Look out for these telltales:
+
+• 📢 **Sensational Hooks**: Headings shouting "YOU WON'T SECURE WHAT HAPPENS..." or "THE HIDDEN SECRET REVEALED!"
+• 😡 **Emotion Triggers**: Using extreme alarmist triggers to override critical questioning.
+• ❓ **Leading Questions**: Formulating titles as dramatic questions rather than providing actual facts.
+
+You can paste any headline into our main analyzer screen to check its credibility mathematically! 📊✨`;
     }
-    return `💡 **Misinformation Shield**: Digital rumor channels succeed when individuals process social materials too fast.
-🛡️ **Verify Domains**: Feed publisher addresses through our active reputation dashboard to extract risk profiles.
-🔍 **Cross References**: Consult fact-check databases such as [Snopes](https://www.snopes.com) or [Google Fact Check](https://toolbox.google.com/factcheck/explorer) to verify claims.
-🎓 **Safe Sharing**: By training your diagnostic reflexes, you effectively halt digital panic before it spreads to your contacts!`;
+
+    // 6. Cyber Security / Robot Human verification scams
+    if (q.includes("robot") || q.includes("human") || q.includes("verification") || q.includes("code") || q.includes("install") || q.includes("scam") || q.includes("command") || q.includes("cmd") || q.includes("powershell")) {
+      return `🚨 **Warning: Legitimate websites will NEVER ask you to paste custom script codes!** 🛡️
+
+If a browser window demands you to "press keys, open your terminal (Powershell/CMD), and copy/execute command lines" to prove you are human—**it is an active virus attack!**
+
+* **Genuine verifications**: Legitimate CAPTCHAs only require checking a box or selecting photos. They never execute command files.
+* **The Scam Trap**: Copying keys or installing scripts bypasses all browser firewalls, running adware directly on your PC.
+* **Immediate Response**: Close the tab right away! If you already ran a code, turn off your internet and scan your system with anti-virus software.
+
+Stay safe in your web browsing! For similar digital alerts, check the [Snopes Fact Check](https://www.snopes.com) portal. 😊🌷`;
+    }
+
+    // 7. Thank you / Gratitude
+    if (q.includes("thanks") || q.includes("thank you") || q.includes("ty") || q.includes("perfect") || q.includes("awesome") || q.includes("cool") || q.includes("great")) {
+      return `😊 **You're very welcome!** 🌟
+
+I am incredibly happy to assist you in staying safe and confident online. Media literacy is a team effort! 🛡️✨
+
+Is there another viral claim you'd like us to inspect? Or do you have setup questions? Let me know! 🌷`;
+    }
+
+    // 8. Default dynamic conversational mapper
+    const cleanWords = q.split(/\s+/).filter(w => w.length > 3 && !["this", "that", "with", "have", "your", "what", "where", "when", "about"].includes(w));
+    if (cleanWords.length > 0) {
+      const topic = cleanWords[Math.floor(Math.random() * cleanWords.length)];
+      return `💬 **That is an interesting topic about "${topic}"! Let's explore it together!** 😊
+
+While I'm currently running in local offline sandbox mode (without a live Gemini API key connected to the backend server), I'm fully trained to help you think about this critically:
+
+1️⃣ **Find Original References**: Does the discussion about **${topic}** suggest any verified physical evidence, quotes from official sources, or peer-reviewed studies?
+2️⃣ **Verify the Claim**: Open search portals to check if authorized news agencies describe **${topic}** in a similar manner, or search on [Snopes Fact-Checker](https://www.snopes.com) for direct verdicts.
+3️⃣ **Check the Publishing Source**: Utilize our **Domain Inspector** screen to check the credibility and history of any blog or website presenting this claim.
+
+To connect real-time Gemini AI and explore this topic with full cognitive capabilities, just type **"setup key"** to view our 5-second helper! 
+
+What other thoughts or questions do you have about **${topic}**? Let's keep chatting! 🛡️✨`;
+    }
+
+    return `👋 **Hello from Truth Shield Assistant Support!** 🛡️
+
+I am here to answer your doubts clearly, provide helpful web references, and guide you step-by-step through media safety with the support of a friendly customer care representative. 🌟
+
+* **Need Setup Help?** Type **"setup env"** to quickly learn how to connect the Gemini AI fully in your local browser!
+* **Want Fact Checks?** Ask me how to verify news easily or find trustworthy Snopes/Google links.
+
+What's on your mind? I am listening, so let's chat! 😊🌷`;
   };
 
   return (

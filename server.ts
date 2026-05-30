@@ -12,20 +12,33 @@ app.use(express.json());
 
 const PORT = 3000;
 
-// Initialize the Google GenAI SDK lazily
+// Initialize the Google GenAI SDK lazily with robust key validation and quote stripping
 let aiClient: GoogleGenAI | null = null;
 function getGeminiClient(): GoogleGenAI | null {
   if (!aiClient) {
-    const key = process.env.GEMINI_API_KEY;
-    if (key && key !== "MY_GEMINI_API_KEY") {
-      aiClient = new GoogleGenAI({
-        apiKey: key,
-        httpOptions: {
-          headers: {
-            'User-Agent': 'aistudio-build',
+    let key = process.env.GEMINI_API_KEY;
+    if (key) {
+      key = key.trim();
+      // Strip outer double or single quotes if present (common when parsed from variables)
+      if ((key.startsWith('"') && key.endsWith('"')) || (key.startsWith("'") && key.endsWith("'"))) {
+        key = key.substring(1, key.length - 1).trim();
+      }
+      
+      if (key && key !== "MY_GEMINI_API_KEY" && key !== "undefined" && key !== "") {
+        console.log("Initializing server-side Gemini client with a defined API key.");
+        aiClient = new GoogleGenAI({
+          apiKey: key,
+          httpOptions: {
+            headers: {
+              'User-Agent': 'aistudio-build',
+            }
           }
-        }
-      });
+        });
+      } else {
+        console.warn("Gemini Client requested, but GEMINI_API_KEY is the default placeholder or empty.");
+      }
+    } else {
+      console.warn("Gemini Client requested, but process.env.GEMINI_API_KEY is not defined.");
     }
   }
   return aiClient;
@@ -612,7 +625,7 @@ app.get("/stats", handleGetStats);
 
 // 4. Sources Check Endpoint
 // GET /api/sources/check (or /sources/check)
-const handleCheckSource = (req: express.Request, res: express.Response) => {
+const handleCheckSource = async (req: express.Request, res: express.Response) => {
   const queryDomain = (req.query.domain as string || "").toLowerCase().trim();
   if (!queryDomain) {
     return res.status(400).json({ error: "Missing required query parameter: domain" });
@@ -636,19 +649,65 @@ const handleCheckSource = (req: express.Request, res: express.Response) => {
         ? "This publisher maintains stable journalistic code. High reputation and factual output."
         : "Exercising high skepticism is highly suggested. This source displays consistent biases, clickbait patterns or extreme propaganda alerts."
     });
-  } else {
-    // Generate custom dynamic estimation based on standard domains
-    const ratingEstimated = cleanDomain.endsWith(".gov") || cleanDomain.endsWith(".edu") || cleanDomain.endsWith(".org") ? 88 : 45;
-    const estimatedClass = ratingEstimated > 70 ? "Estimated Verifiable Source" : "Unknown / Unclassified Domain";
-    return res.json({
-      domain: cleanDomain,
-      found: false,
-      ratingScore: ratingEstimated,
-      classification: estimatedClass,
-      totalFlags: 0,
-      recommendation: "Our database doesn't list this host yet. Check if they have an active physical editorial office, an 'About Us' summary, or represent anonymous groups before sharing."
-    });
   }
+
+  // Use Gemini Client if valid and available
+  const ai = getGeminiClient();
+  if (ai) {
+    try {
+      const systemPrompt = `You are Truth Shield AI's domain credibility expert.
+Analyze the legitimacy, reputation, the level of real journalism vs fake news/satire/clickbait/scam/misinformation of the web domain: "${cleanDomain}".
+
+Provide an authentic assessment and credibility score (0 to 100, where 100 means extremely trustworthy/governmental/academic and 0 means hazardous/fake/phishing/propaganda).
+
+CRITICAL: Use Google Search grounding to correctly identify if the domain is a known reputable publication, a government/academic department, a satirical outlet, a known fake news blog, or an unverified personal site.
+
+You must reply with a valid JSON strictly containing these fields:
+{
+  "ratingScore": integer (0 to 100),
+  "classification": "Classification description string",
+  "totalFlags": integer (number of standard trust flags triggered, 0 to 50),
+  "recommendation": "Educational advice/summary about why the source is classified this way, what it represents, and how to verify its statements"
+}`;
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: systemPrompt,
+        config: {
+          tools: [{ googleSearch: {} }],
+          responseMimeType: "application/json",
+          temperature: 0.1,
+        }
+      });
+
+      const responseText = response.text;
+      if (responseText) {
+        const parsed = JSON.parse(responseText.trim());
+        return res.json({
+          domain: cleanDomain,
+          found: true,
+          ratingScore: parsed.ratingScore ?? 50,
+          classification: parsed.classification ?? "Unknown Domain Model Assessment",
+          totalFlags: parsed.totalFlags ?? 0,
+          recommendation: parsed.recommendation ?? "Verify statements before trusting."
+        });
+      }
+    } catch (apiError) {
+      console.error("Gemini domain check failed, falling back to heuristics:", apiError);
+    }
+  }
+
+  // Generate fallback dynamic estimation if Gemini fails or isn't configured
+  const ratingEstimated = cleanDomain.endsWith(".gov") || cleanDomain.endsWith(".edu") || cleanDomain.endsWith(".org") ? 88 : 45;
+  const estimatedClass = ratingEstimated > 70 ? "Estimated Verifiable Source" : "Unknown / Unclassified Domain";
+  return res.json({
+    domain: cleanDomain,
+    found: false,
+    ratingScore: ratingEstimated,
+    classification: estimatedClass,
+    totalFlags: 0,
+    recommendation: "Our database doesn't list this host yet. Check if they have an active physical editorial office, an 'About Us' summary, or represent anonymous groups before sharing."
+  });
 };
 app.get("/api/sources/check", handleCheckSource);
 app.get("/sources/check", handleCheckSource);
@@ -657,6 +716,191 @@ app.get("/sources/check", handleCheckSource);
 // Expose a database schema API for the interactive MySQL database viewer in the UI
 app.get("/api/db-schema", (req, res) => {
   res.json(DBMigrationSchema);
+});
+
+
+// 5. Conversational AI Chat Endpoint
+// POST /api/chat
+app.post("/api/chat", async (req, res) => {
+  const { message = "", history = [] } = req.body;
+
+  if (!message.trim()) {
+    return res.status(400).json({ error: "Message content is required for the chat endpoint." });
+  }
+
+  const userQuery = message.trim();
+
+  // Try to use Gemini model if available
+  const ai = getGeminiClient();
+  if (ai) {
+    try {
+      const systemInstruction = `You are Truth Shield AI's primary Chatbot Support and Media Literacy expert, named "Truth Shield Analyst" 🛡️.
+You act exactly like a warm, supportive, and highly conversational customer care partner.
+
+Follow these strict rules:
+1. Speak in an authentic, friendly, and professional chat-oriented tone. Let the customer feel listened to and understood.
+2. Keep your answers brief, bite-sized, and highly conversational (just like ChatGPT). Avoid dumping long essays or heavy walls of text. Write 1-3 short paragraphs max per message.
+3. Provide clear step-by-step guidance only when answering complex procedures, using list layouts with clean bullet points or numbered badges.
+4. Integrate warm, visually pleasing, and highly relevant emojis (e.g., 😊, 🛡️, 🔍, 💡, ✨, 🌟, ➔) naturally to make the text beautiful and easy to read.
+5. Provide markdown links for factual claims, search queries, or news diagnostics pointing to trustworthy sites: Snopes (https://www.snopes.com), FactCheck.org (https://www.factcheck.org), PolitiFact (https://www.politifact.com), or Google Fact Check Explorer (https://toolbox.google.com/factcheck/explorer). Never invent fake links.`;
+
+      // Structure conversational contents for Gemini sdk
+      const contentsList: any[] = [];
+      if (history && Array.isArray(history)) {
+        // Limit history size to keep clean token length
+        const recentHistory = history.slice(-10);
+        for (const item of recentHistory) {
+          if (item.sender === "user" && item.text) {
+            contentsList.push({ role: "user", parts: [{ text: item.text }] });
+          } else if (item.sender === "bot" && item.text) {
+            contentsList.push({ role: "model", parts: [{ text: item.text }] });
+          }
+        }
+      }
+
+      // Add the current message
+      contentsList.push({ role: "user", parts: [{ text: userQuery }] });
+
+      const response = await ai.models.generateContent({
+        model: "gemini-3.5-flash",
+        contents: contentsList,
+        config: {
+          systemInstruction: systemInstruction,
+          tools: [{ googleSearch: {} }],
+          temperature: 0.7,
+        }
+      });
+
+      const replyText = response.text;
+      if (replyText) {
+        return res.json({ response: replyText });
+      }
+    } catch (apiError) {
+      console.error("Gemini conversational chat failed, fallback to offline guidelines response:", apiError);
+    }
+  }
+
+  // Graceful local heuristic fallback if API keys are inactive or limited
+  const getOfflineChatFallback = (query: string): string => {
+    const q = query.toLowerCase().trim();
+    
+    // 1. Technical / Local setup questions
+    if (q.includes("local") || q.includes("setup") || q.includes("mysql") || q.includes("browser") || q.includes("database") || q.includes("key") || q.includes("env") || q.includes("config")) {
+      return `💡 **Setting up your local environment is incredibly quick and easy!** 😊
+
+Here is a step-by-step hub guide to get you up and running:
+
+1️⃣ **Configure the Gemini AI Key**: Go to [Google AI Studio](https://aistudio.google.com), click to get a free API Key, and paste it into your local project's \`.env\` file as: \`GEMINI_API_KEY=your_key_here\`.
+2️⃣ **Interactive Database**: By default, the app runs on a zero-setup JSON database (\`sandbox_db.json\`) to save histories and scans automatically nearby! If you wish to use MySQL, configure your credentials in the same \`.env\` file using the DBMigrationSchema layout.
+3️⃣ **Run the Server**: Install dependencies with \`npm install\`, then run \`npm run dev\` and open \`http://localhost:3000\` to see everything alive.
+
+Let me know if you need setup help or run into any trouble, I am here to guide you step-by-step! 🛠️✨`;
+    }
+
+    // 2. Greetings - Checked on word boundaries to prevent matching substrings like 'this', 'within', or 'they'.
+    const greetingRegex = /\b(hello|hi|hey|greetings|good\s+morning|good\s+afternoon|g'day)\b/i;
+    if (greetingRegex.test(q)) {
+      return `👋 **Hello! I am Truth Shield Analyst, your friendly safety assistant!** 😊
+
+I am absolutely thrilled to chat with you today! I am here to discuss online claims, answer doubts about news source legitimacy, or guide you step-by-step through staying safe on the web!
+
+🌟 **Here are a few quick ways we can work together today:**
+• Analyze a suspicious headline or viral message.
+• Learn how to spot clickbait prompts or fear-mongering flags.
+• Set up your local database and Gemini AI key.
+
+How is your day going? Tell me what's on your mind and let's explore it together! 💬✨`;
+    }
+
+    // 3. Fake News / Verification Steps
+    if (q.includes("verify") || q.includes("fake news") || q.includes("check") || q.includes("spot") || q.includes("how to")) {
+      return `🧭 **Spotting and verifying claims like a professional is simple!** 🔍
+
+You don't need days of media classes to protect your friends and family. Here are the 3 golden rules:
+
+1️⃣ **Inspect the Source Domain**: Utilize our **Domain Inspector** tab to check if the publisher has hyper-partisan propaganda ratings or unsafe red flags.
+2️⃣ **Look for Major Sources**: Open an search engine to verify if reputable global news bureaus are discussing the same report.
+3️⃣ **Test with Independent Experts**: Copy the statement and check it on [Snopes Fact Check](https://www.snopes.com) or [FactCheck.org](https://www.factcheck.org).
+
+Do you have a specific rumor or claim you'd like us to look up together right now? Let's check it! 🌟🛡️`;
+    }
+
+    // 4. WhatsApp / Viral Forwards
+    if (q.includes("whatsapp") || q.includes("forward") || q.includes("viral") || q.includes("message")) {
+      return `📌 **Viral WhatsApp forwards can indeed be tricky to navigate!** 📱
+
+Because forwards bypass journalistic controls, false warnings and panic can spread uncontrolled very quickly. Here is the best way to handle them calmly:
+
+• 🛑 **Pause on Urgency**: If a citation urges you to "FORWARD IMMEDIATELY!" or uses flashy capital letters, it is designed to bypass your logical thinking.
+• 🔍 **Search the Core claim**: Copy the key sentence and paste it into [Google Fact Check Explorer](https://toolbox.google.com/factcheck/explorer) to check if a verdict already exists.
+• 🛡️ **Politely Alert the Sender**: Texting back reports in a positive way maintains community health!
+
+Have you received a suspicious WhatsApp message we can inspect together? Put it in the chat! 😊🌷`;
+    }
+
+    // 5. Clickbait / Headlines
+    if (q.includes("clickbait") || q.includes("headline") || q.includes("bait")) {
+      return `💡 **Spotting sensational clickbait is a great superpower!** 🎣
+
+Clickbait existence relies purely on provoking feelings of curiosity, rage, or anxiety to secure ad revenue. Look out for these telltales:
+
+• 📢 **Sensational Hooks**: Headings shouting "YOU WON'T SECURE WHAT HAPPENS..." or "THE HIDDEN SECRET REVEALED!"
+• 😡 **Emotion Triggers**: Using extreme alarmist triggers to override critical questioning.
+• ❓ **Leading Questions**: Formulating titles as dramatic questions rather than providing actual facts.
+
+You can paste any headline into our main analyzer screen to check its credibility mathematically! 📊✨`;
+    }
+
+    // 6. Cyber Security / Robot Human verification scams
+    if (q.includes("robot") || q.includes("human") || q.includes("verification") || q.includes("code") || q.includes("install") || q.includes("scam") || q.includes("command") || q.includes("cmd") || q.includes("powershell")) {
+      return `🚨 **Warning: Legitimate websites will NEVER ask you to paste custom script codes!** 🛡️
+
+If a browser window demands you to "press keys, open your terminal (Powershell/CMD), and copy/execute command lines" to prove you are human—**it is an active virus attack!**
+
+* **Genuine verifications**: Legitimate CAPTCHAs only require checking a box or selecting photos. They never execute command files.
+* **The Scam Trap**: Copying keys or installing scripts bypasses all browser firewalls, running adware directly on your PC.
+* **Immediate Response**: Close the tab right away! If you already ran a code, turn off your internet and scan your system with anti-virus software.
+
+Stay safe in your web browsing! For similar digital alerts, check the [Snopes Fact Check](https://www.snopes.com) portal. 😊🌷`;
+    }
+
+    // 7. Thank you / Gratitude
+    if (q.includes("thanks") || q.includes("thank you") || q.includes("ty") || q.includes("perfect") || q.includes("awesome") || q.includes("cool") || q.includes("great")) {
+      return `😊 **You're very welcome!** 🌟
+
+I am incredibly happy to assist you in staying safe and confident online. Media literacy is a team effort! 🛡️✨
+
+Is there another viral claim you'd like us to inspect? Or do you have setup questions? Let me know! 🌷`;
+    }
+
+    // 8. Default dynamic conversational mapper
+    const cleanWords = q.split(/\s+/).filter(w => w.length > 3 && !["this", "that", "with", "have", "your", "what", "where", "when", "about"].includes(w));
+    if (cleanWords.length > 0) {
+      const topic = cleanWords[Math.floor(Math.random() * cleanWords.length)];
+      return `💬 **That is an interesting topic about "${topic}"! Let's explore it together!** 😊
+
+While I'm currently running in local offline sandbox mode (without a live Gemini API key connected to the backend server), I'm fully trained to help you think about this critically:
+
+1️⃣ **Find Original References**: Does the discussion about **${topic}** suggest any verified physical evidence, quotes from official sources, or peer-reviewed studies?
+2️⃣ **Verify the Claim**: Open search portals to check if authorized news agencies describe **${topic}** in a similar manner, or search on [Snopes Fact-Checker](https://www.snopes.com) for direct verdicts.
+3️⃣ **Check the Publishing Source**: Utilize our **Domain Inspector** screen to check the credibility and history of any blog or website presenting this claim.
+
+To connect real-time Gemini AI and explore this topic with full cognitive capabilities, just type **"setup key"** to view our 5-second helper! 
+
+What other thoughts or questions do you have about **${topic}**? Let's keep chatting! 🛡️✨`;
+    }
+
+    return `👋 **Hello from Truth Shield Assistant Support!** 🛡️
+
+I am here to answer your doubts clearly, provide helpful web references, and guide you step-by-step through media safety with the support of a friendly customer care representative. 🌟
+
+* **Need Setup Help?** Type **"setup env"** to quickly learn how to connect the Gemini AI fully in your local browser!
+* **Want Fact Checks?** Ask me how to verify news easily or find trustworthy Snopes/Google links.
+
+What's on your mind? I am listening, so let's chat! 😊🌷`;
+  };
+
+  res.json({ response: getOfflineChatFallback(userQuery) });
 });
 
 
